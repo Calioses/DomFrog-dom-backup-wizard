@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,22 +15,31 @@ import (
 )
 
 type program struct {
-	exit chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 func (p *program) Start(s service.Service) error {
-	p.exit = make(chan struct{})
+	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.wg.Add(1)
 	go p.run()
 	return nil
 }
 
 func (p *program) run() {
+	defer p.wg.Done()
+
 	home, _ := os.UserHomeDir()
 	appDataFolder := filepath.Join(home, "AppData", "Roaming", "DomFrog")
-	os.MkdirAll(appDataFolder, 0755)
+	if err := os.MkdirAll(appDataFolder, 0755); err != nil {
+		fmt.Println("Failed to create AppData folder:", err)
+		return
+	}
 
 	logFile := openLogFile(appDataFolder)
 	if logFile == nil {
+		fmt.Println("Cannot open log file, exiting daemon.")
 		return
 	}
 	defer logFile.Close()
@@ -55,6 +65,10 @@ func (p *program) run() {
 			destPath = strings.TrimPrefix(line, "Destination=")
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		writeLog(logFile, fmt.Sprintf("Error scanning ini file: %v", err))
+		return
+	}
 
 	if mode == "" || sourcePath == "" || destPath == "" {
 		writeLog(logFile, "Mode, Source, or Destination not set. Exiting.")
@@ -70,11 +84,24 @@ func (p *program) run() {
 	writeLog(logFile, "Backup folder: "+destPath)
 	writeLog(logFile, "Watching: "+sourcePath)
 
-	<-p.exit
+	// Watch loop with context for graceful shutdown
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			writeLog(logFile, "Service stopping gracefully.")
+			return
+		case <-ticker.C:
+			// Add your backup/watch logic here if needed
+		}
+	}
 }
 
 func (p *program) Stop(s service.Service) error {
-	close(p.exit)
+	p.cancel()
+	p.wg.Wait()
 	return nil
 }
 
@@ -88,14 +115,27 @@ func main() {
 		return
 	}
 
-	choice, backupDest, sourcePath := getUserInput(reader)
-	appDataFolder := setupAppDataFolder()
-	if appDataFolder == "" {
+	choice, backupDest, sourcePath, err := getUserInput(reader)
+	if err != nil {
+		fmt.Println("Error getting user input:", err)
 		return
 	}
 
-	writeConfig(appDataFolder, choice, backupDest, sourcePath)
-	copyExeToAppData(appDataFolder)
+	appDataFolder := setupAppDataFolder()
+	if appDataFolder == "" {
+		fmt.Println("Failed to create AppData folder. Exiting.")
+		return
+	}
+
+	if err := writeConfig(appDataFolder, choice, backupDest, sourcePath); err != nil {
+		fmt.Println("Error writing config:", err)
+		return
+	}
+
+	if err := copyExeToAppData(appDataFolder); err != nil {
+		fmt.Println("Error copying executable:", err)
+		return
+	}
 
 	svcConfig := &service.Config{
 		Name:        "DomFrog",
@@ -137,22 +177,34 @@ func main() {
 	fmt.Println("========================================")
 }
 
+// ----------------------- Logging -----------------------
 var logMu sync.Mutex
 
 func writeLog(logFile *os.File, msg string) {
 	logMu.Lock()
 	defer logMu.Unlock()
 	fmt.Fprintf(logFile, "[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
-	logFile.Sync()
+	_ = logFile.Sync()
 }
 
 // ----------------------- Supporting functions -----------------------
+func getUserInput(reader *bufio.Reader) (choice, backupDest, sourcePath string, err error) {
+	choice, err = step1BackupMode(reader)
+	if err != nil {
+		return "", "", "", fmt.Errorf("error in step1BackupMode: %w", err)
+	}
 
-func getUserInput(reader *bufio.Reader) (choice, backupDest, sourcePath string) {
-	choice = step1BackupMode(reader)
-	backupDest = step2BackupDestination(reader)
-	sourcePath = step3SavedGamesFolder(reader)
-	return
+	backupDest, err = step2BackupDestination(reader)
+	if err != nil {
+		return "", "", "", fmt.Errorf("error in step2BackupDestination: %w", err)
+	}
+
+	sourcePath, err = step3SavedGamesFolder(reader)
+	if err != nil {
+		return "", "", "", fmt.Errorf("error in step3SavedGamesFolder: %w", err)
+	}
+
+	return choice, backupDest, sourcePath, nil
 }
 
 func setupAppDataFolder() string {
@@ -162,7 +214,10 @@ func setupAppDataFolder() string {
 		return ""
 	}
 	appDataFolder := filepath.Join(home, "AppData", "Roaming", "DomFrog")
-	os.MkdirAll(appDataFolder, 0755)
+	if err := os.MkdirAll(appDataFolder, 0755); err != nil {
+		fmt.Println("Failed to create AppData folder:", err)
+		return ""
+	}
 	return appDataFolder
 }
 
@@ -176,51 +231,59 @@ func openLogFile(appDataFolder string) *os.File {
 	return logFile
 }
 
-func writeConfig(appDataFolder, choice, backupDest, sourcePath string) {
+func writeConfig(appDataFolder, choice, backupDest, sourcePath string) error {
 	iniPath := filepath.Join(appDataFolder, "config.ini")
 	content := fmt.Sprintf("[BackupConfig]\nMode=%s\nDestination=%s\nSource=%s\n",
 		choice, backupDest, sourcePath)
 	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
-		fmt.Println("Failed to write config:", err)
+		return fmt.Errorf("cannot write config.ini: %w", err)
 	}
+	return nil
 }
 
-func copyExeToAppData(appDataFolder string) {
+func copyExeToAppData(appDataFolder string) error {
 	exePath, err := os.Executable()
 	if err != nil {
-		fmt.Println("Failed to get exe path:", err)
-		return
+		return fmt.Errorf("cannot get executable path: %w", err)
 	}
+
 	dstPath := filepath.Join(appDataFolder, "DomFrog.exe")
+	if filepath.Dir(exePath) == appDataFolder {
+		return nil // already in place
+	}
 
 	src, err := os.Open(exePath)
 	if err != nil {
-		fmt.Println("Failed to open exe:", err)
-		return
+		return fmt.Errorf("cannot open source exe: %w", err)
 	}
 	defer src.Close()
 
 	dst, err := os.Create(dstPath)
 	if err != nil {
-		fmt.Println("Failed to create exe in AppData:", err)
-		return
+		return fmt.Errorf("cannot create destination exe: %w", err)
 	}
 	defer dst.Close()
 
 	if _, err := io.Copy(dst, src); err != nil {
-		fmt.Println("Failed to copy exe:", err)
+		return fmt.Errorf("failed to copy exe: %w", err)
 	}
+
+	return nil
 }
 
-func step1BackupMode(reader *bufio.Reader) string {
+func step1BackupMode(reader *bufio.Reader) (string, error) {
 	fmt.Println("Step 1: Choose backup mode")
 	fmt.Println("1) Save all changes (default)")
 	fmt.Println("2) Save most recent")
 	fmt.Println("3) Disable daemon")
+
 	var choice string
 	for choice == "" {
 		fmt.Print("Enter choice (1-3, Enter=default): ")
-		input, _ := reader.ReadString('\n')
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
 		switch strings.TrimSpace(input) {
 		case "", "1":
 			choice = "1"
@@ -232,13 +295,14 @@ func step1BackupMode(reader *bufio.Reader) string {
 			fmt.Println("Invalid choice.")
 		}
 	}
-	return choice
+	return choice, nil
 }
 
-func step2BackupDestination(reader *bufio.Reader) string {
+func step2BackupDestination(reader *bufio.Reader) (string, error) {
 	home, _ := os.UserHomeDir()
 	defaultDest := filepath.Join(home, "Desktop", "DomFrogBackup")
 	var backupDest string
+
 	for backupDest == "" {
 		fmt.Printf("Step 2: Backup folder (Enter=default: %s): ", defaultDest)
 		input, _ := reader.ReadString('\n')
@@ -248,17 +312,20 @@ func step2BackupDestination(reader *bufio.Reader) string {
 		} else {
 			backupDest = input
 		}
+
 		if err := os.MkdirAll(backupDest, 0755); err != nil {
 			fmt.Println("Failed to create folder:", err)
 			backupDest = ""
 		}
 	}
-	return backupDest
+
+	return backupDest, nil
 }
 
-func step3SavedGamesFolder(reader *bufio.Reader) string {
+func step3SavedGamesFolder(reader *bufio.Reader) (string, error) {
 	defaultPath := detectSavedGamesFolder()
 	var sourcePath string
+
 	for sourcePath == "" {
 		fmt.Printf("Step 3: Savedgames folder (Enter=default: %s): ", defaultPath)
 		input, _ := reader.ReadString('\n')
@@ -268,14 +335,22 @@ func step3SavedGamesFolder(reader *bufio.Reader) string {
 		} else {
 			sourcePath = input
 		}
-		if info, err := os.Stat(sourcePath); err != nil || !info.IsDir() {
+
+		info, err := os.Stat(sourcePath)
+		if err != nil || !info.IsDir() {
 			fmt.Println("Invalid folder. Try again.")
 			sourcePath = ""
 		}
 	}
-	return sourcePath
+
+	return sourcePath, nil
 }
 
 func detectSavedGamesFolder() string {
-	return filepath.Join(os.Getenv("APPDATA"), "Dominions6", "savedgames")
+	appData := os.Getenv("APPDATA")
+	if appData == "" {
+		home, _ := os.UserHomeDir()
+		appData = filepath.Join(home, "AppData", "Roaming")
+	}
+	return filepath.Join(appData, "Dominions6", "savedgames")
 }
