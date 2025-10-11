@@ -5,42 +5,28 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kardianos/service"
 )
 
-/*
-     ______                 ______
-     |  _  \                |  ___|
-     | | | |___  _ __ ___   | |_ _ __ ___   __ _
-     | | | / _ \| '_ ` _ \  |  _| '__/ _ \ / _` |
-     | |/ / (_) | | | | | | | | | | | (_) | (_| |
-     |___/ \___/|_| |_| |_| \_| |_|  \___/ \__, |
-                                            __/ |
-                                           |___/
+type program struct {
+	exit chan struct{}
+}
 
-MIT License
-Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
+func (p *program) Start(s service.Service) error {
+	p.exit = make(chan struct{})
+	go p.run()
+	return nil
+}
 
-*/
-
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--daemon" {
-		runDaemonMode()
-		return
-	}
-
-	reader := bufio.NewReader(os.Stdin)
-	choice, backupDest, sourcePath := getUserInput(reader)
-
-	appDataFolder := setupAppDataFolder()
-	if appDataFolder == "" {
-		return
-	}
+func (p *program) run() {
+	home, _ := os.UserHomeDir()
+	appDataFolder := filepath.Join(home, "AppData", "Roaming", "DomFrog")
+	os.MkdirAll(appDataFolder, 0755)
 
 	logFile := openLogFile(appDataFolder)
 	if logFile == nil {
@@ -48,19 +34,121 @@ func main() {
 	}
 	defer logFile.Close()
 
+	iniPath := filepath.Join(appDataFolder, "config.ini")
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		writeLog(logFile, fmt.Sprintf("Cannot read ini file: %v", err))
+		return
+	}
+
+	mode, sourcePath, destPath := "", "", ""
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "Mode=") {
+			mode = strings.TrimPrefix(line, "Mode=")
+		}
+		if strings.HasPrefix(line, "Source=") {
+			sourcePath = strings.TrimPrefix(line, "Source=")
+		}
+		if strings.HasPrefix(line, "Destination=") {
+			destPath = strings.TrimPrefix(line, "Destination=")
+		}
+	}
+
+	if mode == "" || sourcePath == "" || destPath == "" {
+		writeLog(logFile, "Mode, Source, or Destination not set. Exiting.")
+		return
+	}
+
+	if mode == "3" {
+		writeLog(logFile, "Daemon disabled in config.ini. Exiting.")
+		return
+	}
+
+	writeLog(logFile, "Service started.")
+	writeLog(logFile, "Backup folder: "+destPath)
+	writeLog(logFile, "Watching: "+sourcePath)
+
+	<-p.exit
+}
+
+func (p *program) Stop(s service.Service) error {
+	close(p.exit)
+	return nil
+}
+
+func main() {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Do you want to install and start the DomFrog service? (y/N): ")
+	input, _ := reader.ReadString('\n')
+	if strings.TrimSpace(strings.ToLower(input)) != "y" {
+		fmt.Println("Exiting without installing service.")
+		return
+	}
+
+	choice, backupDest, sourcePath := getUserInput(reader)
+	appDataFolder := setupAppDataFolder()
+	if appDataFolder == "" {
+		return
+	}
+
 	writeConfig(appDataFolder, choice, backupDest, sourcePath)
 	copyExeToAppData(appDataFolder)
-	manageStartupDaemon(appDataFolder)
+
+	svcConfig := &service.Config{
+		Name:        "DomFrog",
+		DisplayName: "DomFrog Daemon",
+		Description: "Backup daemon for Dominions 6 savedgames",
+	}
+
+	prg := &program{}
+	s, err := service.New(prg, svcConfig)
+	if err != nil {
+		fmt.Println("Failed to create service:", err)
+		return
+	}
+
+	status, err := s.Status()
+	if err != nil || status == service.StatusUnknown {
+		if err := s.Install(); err != nil {
+			fmt.Println("Failed to install service:", err)
+			return
+		}
+		fmt.Println("Service installed.")
+	} else {
+		fmt.Println("Service already installed.")
+	}
+
+	status, _ = s.Status()
+	if status != service.StatusRunning {
+		if err := s.Start(); err != nil {
+			fmt.Println("Failed to start service:", err)
+			return
+		}
+		fmt.Println("Service started.")
+	} else {
+		fmt.Println("Service already running.")
+	}
 
 	fmt.Println("\n========================================")
 	fmt.Println("Backup wizard finished")
 	fmt.Println("========================================")
 }
 
+var logMu sync.Mutex
+
+func writeLog(logFile *os.File, msg string) {
+	logMu.Lock()
+	defer logMu.Unlock()
+	fmt.Fprintf(logFile, "[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
+	logFile.Sync()
+}
+
+// ----------------------- Supporting functions -----------------------
+
 func getUserInput(reader *bufio.Reader) (choice, backupDest, sourcePath string) {
-	fmt.Println("========================================")
-	fmt.Println("      DOMINIONS 6 BACKUP WIZARD")
-	fmt.Println("========================================")
 	choice = step1BackupMode(reader)
 	backupDest = step2BackupDestination(reader)
 	sourcePath = step3SavedGamesFolder(reader)
@@ -90,56 +178,50 @@ func openLogFile(appDataFolder string) *os.File {
 
 func writeConfig(appDataFolder, choice, backupDest, sourcePath string) {
 	iniPath := filepath.Join(appDataFolder, "config.ini")
-	content := fmt.Sprintf("[BackupConfig]\n# 1=Save all changes, 2=Save most recent, 3=Disable daemon\nMode=%s\nDestination=%s\nSource=%s\n",
+	content := fmt.Sprintf("[BackupConfig]\nMode=%s\nDestination=%s\nSource=%s\n",
 		choice, backupDest, sourcePath)
 	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
-		fmt.Println("Error writing config.ini:", err)
-	} else {
-		fmt.Println("Configuration saved to:", iniPath)
+		fmt.Println("Failed to write config:", err)
 	}
 }
 
-func copyExeToAppData(appDataFolder string) error {
+func copyExeToAppData(appDataFolder string) {
 	exePath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("cannot get executable path: %w", err)
+		fmt.Println("Failed to get exe path:", err)
+		return
 	}
-
-	copyPath := filepath.Join(appDataFolder, "DomFrog.exe")
+	dstPath := filepath.Join(appDataFolder, "DomFrog.exe")
 
 	src, err := os.Open(exePath)
 	if err != nil {
-		return fmt.Errorf("cannot open source exe: %w", err)
+		fmt.Println("Failed to open exe:", err)
+		return
 	}
 	defer src.Close()
 
-	dst, err := os.Create(copyPath) // os.Create truncates if file exists
+	dst, err := os.Create(dstPath)
 	if err != nil {
-		return fmt.Errorf("cannot create exe copy: %w", err)
+		fmt.Println("Failed to create exe in AppData:", err)
+		return
 	}
 	defer dst.Close()
 
 	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("error copying exe: %w", err)
+		fmt.Println("Failed to copy exe:", err)
 	}
-
-	fmt.Println("Executable copied to AppData:", copyPath)
-	return nil
 }
 
 func step1BackupMode(reader *bufio.Reader) string {
 	fmt.Println("Step 1: Choose backup mode")
-	fmt.Println("----------------------------------------")
 	fmt.Println("1) Save all changes (default)")
 	fmt.Println("2) Save most recent")
 	fmt.Println("3) Disable daemon")
-
 	var choice string
 	for choice == "" {
-		fmt.Print("Enter choice (1-3, press Enter for default): ")
+		fmt.Print("Enter choice (1-3, Enter=default): ")
 		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		switch input {
+		switch strings.TrimSpace(input) {
 		case "", "1":
 			choice = "1"
 		case "2":
@@ -147,269 +229,53 @@ func step1BackupMode(reader *bufio.Reader) string {
 		case "3":
 			choice = "3"
 		default:
-			fmt.Println("Invalid choice, try again.")
+			fmt.Println("Invalid choice.")
 		}
 	}
-
-	fmt.Println("You selected option number:", choice)
-	fmt.Println()
 	return choice
 }
 
 func step2BackupDestination(reader *bufio.Reader) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Println("Cannot get user home directory:", err)
-		return ""
-	}
-
-	// Suggested default location for backups
-	onedriveDesktop := filepath.Join(home, "OneDrive", "Desktop", "DomFrogBackup")
-	normalDesktop := filepath.Join(home, "Desktop", "DomFrogBackup")
-
-	defaultBackup := normalDesktop
-	if _, err := os.Stat(onedriveDesktop); err == nil {
-		defaultBackup = onedriveDesktop
-	}
-
-	fmt.Println("Step 2: Select DomFrog backup folder")
-	fmt.Println("----------------------------------------")
-	fmt.Printf("Press Enter to use default: %s\n", defaultBackup)
-
+	home, _ := os.UserHomeDir()
+	defaultDest := filepath.Join(home, "Desktop", "DomFrogBackup")
 	var backupDest string
 	for backupDest == "" {
-		fmt.Print("Enter folder path (or press Enter to use default): ")
+		fmt.Printf("Step 2: Backup folder (Enter=default: %s): ", defaultDest)
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
-		if input == "" && defaultBackup != "" {
-			backupDest = defaultBackup
-		} else if input != "" {
-			backupDest = filepath.Join(input, "DomFrogBackup")
+		if input == "" {
+			backupDest = defaultDest
+		} else {
+			backupDest = input
 		}
-
 		if err := os.MkdirAll(backupDest, 0755); err != nil {
-			fmt.Println("Could not create folder:", err)
+			fmt.Println("Failed to create folder:", err)
 			backupDest = ""
 		}
 	}
-
-	fmt.Println("DomFrog backup folder set to:", backupDest)
-	fmt.Println()
 	return backupDest
 }
 
 func step3SavedGamesFolder(reader *bufio.Reader) string {
-	fmt.Println("Step 3: Select Dominions6 savedgames folder")
-	fmt.Println("----------------------------------------")
-	autoPath := detectSavedGamesFolder()
-	if autoPath != "" {
-		fmt.Println("Autodetected savedgames folder:", autoPath)
-	} else {
-		fmt.Println("No savedgames folder detected automatically.")
-	}
-
+	defaultPath := detectSavedGamesFolder()
 	var sourcePath string
 	for sourcePath == "" {
-		fmt.Print("Enter folder path (press Enter to use autodetected path): ")
+		fmt.Printf("Step 3: Savedgames folder (Enter=default: %s): ", defaultPath)
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
-		if input == "" && autoPath != "" {
-			sourcePath = autoPath
-		} else if input != "" {
+		if input == "" {
+			sourcePath = defaultPath
+		} else {
 			sourcePath = input
 		}
 		if info, err := os.Stat(sourcePath); err != nil || !info.IsDir() {
-			fmt.Println("Invalid folder, try again.")
+			fmt.Println("Invalid folder. Try again.")
 			sourcePath = ""
 		}
 	}
-	fmt.Println("Savedgames folder selected:", sourcePath)
-	fmt.Println()
 	return sourcePath
 }
 
 func detectSavedGamesFolder() string {
-	home, _ := os.UserHomeDir()
-	var path string
-
-	switch runtime.GOOS {
-	case "windows":
-		path = filepath.Join(os.Getenv("APPDATA"), "Dominions6", "savedgames")
-	case "darwin":
-		path = filepath.Join(home, "Library", "Application Support", "Dominions6", "savedgames")
-	default:
-		path = filepath.Join(home, ".local", "share", "Dominions6", "savedgames")
-	}
-
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		return path
-	}
-	return ""
-}
-
-func manageStartupDaemon(appDataFolder string) error {
-	logFile := openLogFile(appDataFolder)
-	if logFile == nil {
-		return fmt.Errorf("cannot open log file")
-	}
-	defer logFile.Close()
-
-	iniPath := filepath.Join(appDataFolder, "config.ini")
-	data, err := os.ReadFile(iniPath)
-	if err != nil {
-		fmt.Fprintf(logFile, "[%s] Cannot read ini file: %v\n", time.Now().Format("2006-01-02 15:04:05"), err)
-		return err
-	}
-
-	mode := ""
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "Mode=") {
-			mode = strings.TrimPrefix(line, "Mode=")
-			break
-		}
-	}
-
-	exePath := filepath.Join(appDataFolder, "DomFrog.exe")
-	if _, err := os.Stat(exePath); err != nil {
-		fmt.Fprintf(logFile, "[%s] DomFrog.exe not found in AppData: %v\n", time.Now().Format("2006-01-02 15:04:05"), err)
-		return err
-	}
-
-	startupDir := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
-	shortcutPath := filepath.Join(startupDir, "DomFrog.lnk")
-
-	if mode == "3" {
-		if _, err := os.Stat(shortcutPath); err == nil {
-			os.Remove(shortcutPath)
-			fmt.Fprintf(logFile, "[%s] Removed startup shortcut (daemon disabled)\n", time.Now().Format("2006-01-02 15:04:05"))
-		}
-		return nil
-	}
-
-	if _, err := os.Stat(shortcutPath); err == nil {
-		os.Remove(shortcutPath)
-	}
-
-	vbs := fmt.Sprintf(`Set WshShell = WScript.CreateObject("WScript.Shell")
-Set shortcut = WshShell.CreateShortcut("%s")
-shortcut.TargetPath = "%s"
-shortcut.Arguments = "--daemon"
-shortcut.WorkingDirectory = "%s"
-shortcut.WindowStyle = 0
-shortcut.Save`, shortcutPath, exePath, filepath.Dir(exePath))
-
-	tmpFile := filepath.Join(os.TempDir(), "create_shortcut.vbs")
-	if err := os.WriteFile(tmpFile, []byte(vbs), 0644); err != nil {
-		fmt.Fprintf(logFile, "[%s] Error writing VBS file: %v\n", time.Now().Format("2006-01-02 15:04:05"), err)
-		return err
-	}
-	defer os.Remove(tmpFile)
-
-	if _, err := exec.LookPath("wscript"); err != nil {
-		fmt.Fprintf(logFile, "[%s] wscript not found: %v\n", time.Now().Format("2006-01-02 15:04:05"), err)
-		return err
-	}
-
-	cmd := exec.Command("wscript", tmpFile)
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(logFile, "[%s] Failed to create shortcut: %v\n", time.Now().Format("2006-01-02 15:04:05"), err)
-		return err
-	}
-
-	fmt.Fprintf(logFile, "[%s] Startup shortcut created successfully: %s\n", time.Now().Format("2006-01-02 15:04:05"), shortcutPath)
-	return nil
-}
-
-func HashFile(path string) uint64 {
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return 0
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	var h uint64
-	for _, b := range data {
-		h = h*31 + uint64(b)
-	}
-	return h
-}
-
-var logMu sync.Mutex
-
-func writeLog(logFile *os.File, msg string) {
-	logMu.Lock()
-	defer logMu.Unlock()
-	fmt.Fprintf(logFile, "[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
-	logFile.Sync()
-}
-
-func runDaemonMode() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-
-	appDataFolder := filepath.Join(home, "AppData", "Roaming", "DomFrog")
-	os.MkdirAll(appDataFolder, 0755)
-
-	logFile := openLogFile(appDataFolder)
-	if logFile == nil {
-		return
-	}
-	defer logFile.Close()
-
-	iniPath := filepath.Join(appDataFolder, "config.ini")
-	data, err := os.ReadFile(iniPath)
-	if err != nil {
-		fmt.Fprintf(logFile, "[%s] Cannot read ini file: %v\n", time.Now().Format("2006-01-02 15:04:05"), err)
-		logFile.Sync()
-		return
-	}
-
-	mode, sourcePath, destPath := "", "", ""
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "Mode=") {
-			mode = strings.TrimPrefix(line, "Mode=")
-		}
-		if strings.HasPrefix(line, "Source=") {
-			sourcePath = strings.TrimPrefix(line, "Source=")
-		}
-		if strings.HasPrefix(line, "Destination=") {
-			destPath = strings.TrimPrefix(line, "Destination=")
-		}
-	}
-
-	if mode == "" || sourcePath == "" {
-		fmt.Fprintf(logFile, "[%s] Mode or Source not set in config.ini. Exiting.\n", time.Now().Format("2006-01-02 15:04:05"))
-		logFile.Sync()
-		return
-	}
-
-	if mode == "3" {
-		fmt.Fprintf(logFile, "[%s] Daemon is disabled in config.ini. Exiting.\n", time.Now().Format("2006-01-02 15:04:05"))
-		logFile.Sync()
-		return
-	}
-
-	writeLog(logFile, "Daemon started.")
-	writeLog(logFile, "Backup folder: "+destPath)
-	writeLog(logFile, "Watching savedgames folder: "+sourcePath)
-
-	// Heartbeat goroutine
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			writeLog(logFile, "Daemon heartbeat.")
-		}
-	}()
-
-	// Keep the daemon running (replace with your folder watch logic)
-	select {}
+	return filepath.Join(os.Getenv("APPDATA"), "Dominions6", "savedgames")
 }
