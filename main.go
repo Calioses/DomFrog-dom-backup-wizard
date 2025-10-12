@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,9 +17,8 @@ import (
 
 type program struct {
 	exit    chan struct{}
-	exitMu  sync.Mutex
-	logFile *os.File
 	wg      sync.WaitGroup
+	logFile *os.File
 }
 
 func isAdmin() bool {
@@ -31,7 +31,7 @@ func isAdmin() bool {
 	return member
 }
 
-// ----------------------- Main & support -----------------------
+// ----------------------- Watchdog Service -----------------------
 
 func (p *program) Start(s service.Service) error {
 	p.exit = make(chan struct{})
@@ -40,83 +40,93 @@ func (p *program) Start(s service.Service) error {
 	if folder == "" {
 		fmt.Println("ERROR: AppData folder unavailable, using fallback C:\\Temp\\DomFrog")
 		folder = "C:\\Temp\\DomFrog"
-		if err := os.MkdirAll(folder, 0755); err != nil {
-			fmt.Println("ERROR: Failed to create fallback folder:", err)
-			return err
-		}
+		os.MkdirAll(folder, 0755)
 	}
 
 	logFilePath := filepath.Join(folder, "daemon.log")
 	f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Println("WARNING: Failed to open log file, heartbeats will print to console:", err)
+		fmt.Println("WARNING: Failed to open log file, logging to console:", err)
 		p.logFile = nil
 	} else {
 		p.logFile = f
 	}
 
 	p.wg.Add(1)
-	go p.run()
+	go p.watchdog(folder)
 
-	writeLog("Daemon background process started. Heartbeats will begin shortly.", p.logFile)
+	writeLog("Watchdog service started. Will ensure DomFrog daemon is running.", p.logFile)
 	return nil
 }
 
-func (p *program) run() {
+func (p *program) watchdog(appData string) {
 	defer p.wg.Done()
-	writeLog("Heartbeat logging immediately and every 5 seconds.", p.logFile)
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
+	exePath := filepath.Join(appData, "DomFrog.exe")
+
 	for {
 		select {
 		case <-p.exit:
-			writeLog("Service stopping gracefully.", p.logFile)
+			writeLog("Watchdog stopping.", p.logFile)
 			return
 		case <-ticker.C:
-			// per-heartbeat error logging
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						writeLog(fmt.Sprintf("ERROR: Heartbeat panic recovered: %v", r), p.logFile)
+						writeLog(fmt.Sprintf("ERROR: Watchdog panic: %v", r), p.logFile)
 					}
 				}()
 
-				writeLog("Daemon heartbeat...", p.logFile)
+				// check if process running
+				running := false
+				out, _ := exec.Command("tasklist").Output()
+				if strings.Contains(string(out), "DomFrog.exe") {
+					running = true
+				}
+
+				if !running {
+					writeLog("DomFrog.exe not running, launching daemon...", p.logFile)
+					cmd := exec.Command(exePath, "--daemon")
+					if err := cmd.Start(); err != nil {
+						writeLog(fmt.Sprintf("ERROR: Failed to start daemon: %v", err), p.logFile)
+					} else {
+						writeLog("DomFrog daemon launched successfully.", p.logFile)
+					}
+				} else {
+					writeLog("DomFrog.exe already running.", p.logFile)
+				}
 			}()
 		}
 	}
 }
 
 func (p *program) Stop(s service.Service) error {
-	p.exitMu.Lock()
-	defer p.exitMu.Unlock()
-
-	select {
-	case <-p.exit:
-	default:
-		close(p.exit)
-	}
-
+	close(p.exit)
 	p.wg.Wait()
-
 	if p.logFile != nil {
-		if err := p.logFile.Close(); err != nil {
-			fmt.Println("WARNING: Failed to close log file:", err)
-		}
+		p.logFile.Close()
 	}
-
-	writeLog("Daemon stopped.", nil)
+	writeLog("Watchdog service stopped.", nil)
 	return nil
 }
 
+// ----------------------- Main -----------------------
+
 func main() {
+	// If launched with --daemon, run daemon function and exit
+	if len(os.Args) > 1 && os.Args[1] == "--daemon" {
+		runDaemon()
+		return
+	}
+
 	prg := &program{}
 	svcConfig := &service.Config{
 		Name:        "DomFrog",
-		DisplayName: "DomFrog Daemon",
-		Description: "Backup daemon for Dominions 6 savedgames",
+		DisplayName: "DomFrog Daemon Watchdog",
+		Description: "Ensures DomFrog daemon is always running",
 		Option:      service.KeyValue{"StartType": "automatic"},
 		UserName:    os.Getenv("USERNAME") + "@" + os.Getenv("USERDOMAIN"),
 	}
@@ -129,7 +139,7 @@ func main() {
 
 	if service.Interactive() {
 		if !isAdmin() {
-			fmt.Println("Warning: program is not running as Administrator. Service install may fail.")
+			fmt.Println("Warning: not running as Administrator. Service install may fail.")
 		}
 
 		reader := bufio.NewReader(os.Stdin)
@@ -142,7 +152,7 @@ func main() {
 
 		choice, backupDest, sourcePath, err := getUserInput(reader)
 		if err != nil {
-			fmt.Println("Error getting user input:", err)
+			fmt.Println("Error getting input:", err)
 			return
 		}
 
@@ -159,25 +169,45 @@ func main() {
 			fmt.Println("Failed to install service:", err)
 			return
 		}
-		writeLog("Service installed successfully", nil)
+		writeLog("Service installed successfully.", nil)
 
 		if err := s.Start(); err != nil && !strings.Contains(err.Error(), "already running") {
 			fmt.Println("Failed to start service:", err)
 			return
 		}
-		writeLog("Service started successfully. Heartbeats will be logged to daemon.log", nil)
+		writeLog("Service started successfully. Watchdog running in background.", nil)
 
-		fmt.Println("Service installed and started. Exiting interactive mode.")
+		fmt.Println("Interactive setup finished. Exiting interactive console.")
 		return
 	}
 
-	// Running as service: everything happens in background
+	// Running as service
 	if err := s.Run(); err != nil {
 		f, _ := os.OpenFile("C:\\Temp\\DomFrogServiceErrors.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if f != nil {
 			defer f.Close()
 			fmt.Fprintf(f, "[%s] Service failed: %v\n", time.Now().Format("2006-01-02 15:04:05"), err)
 		}
+	}
+}
+
+// ----------------------- Daemon -----------------------
+
+func runDaemon() {
+	appData := setupAppDataFolder()
+	logFilePath := filepath.Join(appData, "daemon.log")
+	f, _ := os.OpenFile(logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	defer f.Close()
+
+	writeLog("DomFrog daemon started.", f)
+
+	// Example daemon activity
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		writeLog("DomFrog daemon heartbeat...", f)
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -197,17 +227,17 @@ func writeLog(msg string, f *os.File) {
 func getUserInput(reader *bufio.Reader) (choice, backupDest, sourcePath string, err error) {
 	choice, err = step1BackupMode(reader)
 	if err != nil {
-		return "", "", "", fmt.Errorf("error in step1BackupMode: %w", err)
+		return "", "", "", fmt.Errorf("step1BackupMode error: %w", err)
 	}
 
 	backupDest, err = step2BackupDestination(reader)
 	if err != nil {
-		return "", "", "", fmt.Errorf("error in step2BackupDestination: %w", err)
+		return "", "", "", fmt.Errorf("step2BackupDestination error: %w", err)
 	}
 
 	sourcePath, err = step3SavedGamesFolder(reader)
 	if err != nil {
-		return "", "", "", fmt.Errorf("error in step3SavedGamesFolder: %w", err)
+		return "", "", "", fmt.Errorf("step3SavedGamesFolder error: %w", err)
 	}
 
 	return choice, backupDest, sourcePath, nil
@@ -224,11 +254,7 @@ func setupAppDataFolder() string {
 	}
 
 	appDataFolder := filepath.Join(appData, "DomFrog")
-	if err := os.MkdirAll(appDataFolder, 0755); err != nil {
-		fmt.Println("Failed to create AppData folder:", err)
-		return ""
-	}
-
+	os.MkdirAll(appDataFolder, 0755)
 	return appDataFolder
 }
 
@@ -240,10 +266,7 @@ func writeConfig(appDataFolder, choice, backupDest, sourcePath string) error {
 }
 
 func copyExeToAppData(appDataFolder string) error {
-	exePath, err := os.Executable()
-	if err != nil {
-		return err
-	}
+	exePath, _ := os.Executable()
 	dstPath := filepath.Join(appDataFolder, "DomFrog.exe")
 	if filepath.Dir(exePath) == appDataFolder {
 		return nil
