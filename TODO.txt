@@ -1,0 +1,131 @@
+
+// ============For later
+
+// func createScheduledTask(appData string) {
+// 	exePath := filepath.Join(appData, "DomFrog.exe")
+// 	taskName := "DomFrogDaemon"
+
+// 	cmd := exec.Command("schtasks",
+// 		"/Create",
+// 		"/F", // force overwrite
+// 		"/RL", "HIGHEST",
+// 		"/SC", "ONLOGON",
+// 		"/TN", taskName,
+// 		"/TR", fmt.Sprintf("\"%s\" --daemon", exePath),
+// 	)
+// 	_ = cmd.Run()
+// }
+
+// func ZipFolder(parentFolder string) error {
+// 	dstZip := parentFolder + ".zip"
+
+// 	if err := ZipFolderContentsOnly(parentFolder, dstZip); err != nil {
+// 		return err
+// 	}
+
+// 	return os.RemoveAll(parentFolder)
+// }
+
+// func ZipFolderContentsOnly(srcFolder, dstZip string) error {
+// 	zipFile, err := os.Create(dstZip)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	defer zipFile.Close()
+
+// 	zipWriter := zip.NewWriter(zipFile)
+// 	defer zipWriter.Close()
+
+// 	return filepath.Walk(srcFolder, func(path string, info os.FileInfo, err error) error {
+// 		if err != nil {
+// 			return err
+// 		}
+// 		if path == srcFolder {
+// 			return nil
+// 		}
+
+// 		relPath, err := filepath.Rel(srcFolder, path)
+// 		if err != nil {
+// 			return err
+// 		}
+
+// 		if info.IsDir() {
+// 			_, err = zipWriter.Create(relPath + "/")
+// 			return err
+// 		}
+
+// 		f, err := os.Open(path)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		defer f.Close()
+
+// 		w, err := zipWriter.Create(relPath)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		_, err = io.Copy(w, f)
+// 		return err
+// 	})
+// }
+// func runDaemonMode() {
+// 	fmt.Println("DO NOT CLOSE THIS PROCESS. THE DAEMON ISN'T WORKING YET")
+
+// 	appData := setupAppDataFolder()
+// 	lockPath := filepath.Join(appData, lockFileName)
+
+// 	if pid, ok := readLock(lockPath); ok && isPidRunning(pid) {
+// 		fmt.Println("Daemon already running with PID", pid)
+// 		return
+// 	}
+
+// 	exePath, err := os.Executable()
+// 	if err != nil {
+// 		fmt.Println("Failed to get executable path:", err)
+// 		return
+// 	}
+
+// 	cmd := exec.Command(exePath)
+// 	cmd.SysProcAttr = &syscall.SysProcAttr{
+// 		CreationFlags: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+// 	}
+// 	cmd.Stdin = nil
+// 	cmd.Stdout = nil
+// 	cmd.Stderr = nil
+
+// 	if err := cmd.Start(); err != nil {
+// 		fmt.Println("Failed to launch detached process:", err)
+// 		return
+// 	}
+
+// 	writeLock(lockPath)
+
+// 	logFilePath, f := openLogFile(appData)
+// 	defer f.Close()
+// 	writeLog("DomFrog daemon started.", f)
+
+// 	runDaemonLoop(logFilePath, f)
+// }
+
+// const DETACHED_PROCESS = 0x00000008
+// const CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+// func createStartupShortcut(appData string) {
+// 	startup := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+// 	os.MkdirAll(startup, 0755)
+// 	shortcut := filepath.Join(startup, "DomFrog.lnk")
+// 	vbs := fmt.Sprintf(`Set WshShell = WScript.CreateObject("WScript.Shell")
+// 		Set shortcut = WshShell.CreateShortcut("%s")
+// 		shortcut.TargetPath = "%s"
+// 		shortcut.Arguments = "--daemon"
+// 		shortcut.WorkingDirectory = "%s"
+// 		shortcut.WindowStyle = 0
+// 		shortcut.Save`, shortcut, filepath.Join(appData, "DomFrog.exe"), appData)
+// 	tmp := filepath.Join(os.TempDir(), "shortcut.vbs")
+// 	os.WriteFile(tmp, []byte(vbs), 0644)
+// 	defer os.Remove(tmp)
+// 	exec.Command("wscript", tmp).Run()
+// }
+
+// TODO add second option
+// TODO add a check for config vars before asking again

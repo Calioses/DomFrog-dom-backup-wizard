@@ -1,62 +1,86 @@
 package main
 
 import (
-	"archive/zip"
 	"bufio"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io"
-	"io/fs"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
-// TODO add second option
-// TODO add a check for config vars before asking again
-
-const DETACHED_PROCESS = 0x00000008
-const CREATE_NEW_PROCESS_GROUP = 0x00000200
 const lockFileName = "DomFrog.lock"
 
-type FolderHashes map[string]uint64
+/*
+     ______                 ______
+     |  _  \                |  ___|
+     | | | |___  _ __ ___   | |_ _ __ ___   __ _
+     | | | / _ \| '_ ` _ \  |  _| '__/ _ \ / _` |
+     | |/ / (_) | | | | | | | | | | | (_) | (_| |
+     |___/ \___/|_| |_| |_| \_| |_|  \___/ \__, |
+                                            __/ |
+                                           |___/
+
+MIT License
+Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
+*/
 
 // ------------------- Setup -------------------
 
-func createStartupShortcut(appData string) {
-	startup := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
-	os.MkdirAll(startup, 0755)
-	shortcut := filepath.Join(startup, "DomFrog.lnk")
-	vbs := fmt.Sprintf(`Set WshShell = WScript.CreateObject("WScript.Shell")
-		Set shortcut = WshShell.CreateShortcut("%s")
-		shortcut.TargetPath = "%s"
-		shortcut.Arguments = "--daemon"
-		shortcut.WorkingDirectory = "%s"
-		shortcut.WindowStyle = 0
-		shortcut.Save`, shortcut, filepath.Join(appData, "DomFrog.exe"), appData)
-	tmp := filepath.Join(os.TempDir(), "shortcut.vbs")
-	os.WriteFile(tmp, []byte(vbs), 0644)
-	defer os.Remove(tmp)
-	exec.Command("wscript", tmp).Run()
-}
-
 // ----------------------- Main -----------------------
-// TODO make the daemon launch in detatched instead of visible
 
 func main() {
-	// detect if running as daemon
-	if len(os.Args) > 1 && os.Args[1] == "--daemon" {
-		runDaemonForever()
-		return
-	}
+	banner := `
+     ______                 ______
+     |  _  \                |  ___|
+     | | | |___  _ __ ___   | |_ _ __ ___   __ _
+     | | | / _ \| '_ ' _ \  |  _| '__/ _ \ / _` + "`" + ` |
+     | |/ / (_) | | | | | | | | | | | (_) | (_| |
+     |___/ \___/|_| |_| |_| \_| |_|  \___/ \__, |
+                                            __/ |
+                                           |___/
 
-	// interactive installer (first run)
+MIT License
+Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
+`
+	fmt.Println(banner)
+
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Println("Choose an option:")
+		fmt.Println("1) Install and run")
+		fmt.Println("2) Run daemon mode")
+		fmt.Println("3) Exit")
+		fmt.Print("Enter choice: ")
+
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		switch input {
+		case "1":
+			runInstallMode()
+			return
+		case "2":
+			runDaemonMode_lite()
+			return
+		case "3":
+			fmt.Println("Exiting...")
+			return
+		default:
+			fmt.Println("Invalid choice, try again.")
+		}
+	}
+}
+
+func runInstallMode() {
+	fmt.Println("Running install mode...")
+	appData := setupAppDataFolder()
 	reader := bufio.NewReader(os.Stdin)
 	choice, backupDest, sourcePath, err := getUserInput(reader)
 	if err != nil {
@@ -64,76 +88,39 @@ func main() {
 		return
 	}
 
-	appData := setupAppDataFolder()
 	writeConfig(appData, choice, backupDest, sourcePath)
 	copyExeToAppData(appData)
 	createEmptyHashFile(appData)
-	createScheduledTask(appData)
-	createStartupShortcut(appData)
+	// createScheduledTask(appData) For
+	// createStartupShortcut(appData)
 
 	fmt.Println("Installed successfully! Daemon starting...")
-	launchDetachedDaemon(appData)
+	runDaemonMode_lite()
+}
+
+func runDaemonMode_lite() {
+	fmt.Println("DO NOT CLOSE THIS PROCESS. THE DAEMON IS RUNNING")
+
+	appData := setupAppDataFolder()
+	lockPath := filepath.Join(appData, lockFileName)
+
+	if pid, ok := readLock(lockPath); ok && isPidRunning(pid) {
+		fmt.Println("Daemon already running with PID", pid)
+		return
+	}
+
+	writeLock(lockPath)
+
+	_, f := openLogFile(appData)
+	defer f.Close()
+	writeLog("DomFrog daemon started.", f)
+
+	runDaemonLoop(appData, f)
 }
 
 // -------------------- DomFrog Core --------------------
 
-func getSubfolders(source string) ([]string, error) {
-	entries, err := os.ReadDir(source)
-	if err != nil {
-		return nil, err
-	}
-
-	var folders []string
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != "newlords" {
-			folders = append(folders, entry.Name())
-		}
-	}
-	return folders, nil
-}
-
-func hashFolder(folderPath string) (uint64, error) {
-	h := fnv.New64a()
-
-	err := filepath.WalkDir(folderPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			data, err := ioutil.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			h.Write(data)
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return h.Sum64(), nil
-}
-
-func StoreFolderHash(appDataFolder, folderName, folderPath string) error {
-	hashFile := filepath.Join(appDataFolder, "hash.json")
-
-	hashes := FolderHashes{}
-	if data, err := ioutil.ReadFile(hashFile); err == nil {
-		json.Unmarshal(data, &hashes)
-	}
-
-	folderHash, err := hashFolder(folderPath)
-	if err != nil {
-		return err
-	}
-
-	hashes[folderName] = folderHash
-
-	newData, _ := json.MarshalIndent(hashes, "", "  ")
-	return ioutil.WriteFile(hashFile, newData, 0644)
-}
-
-func logAndCopySubfolders(mode, destination, source string, f *os.File) {
+func backupGames(mode, appDataFolder, destination, source string, f *os.File) {
 	if mode != "1" {
 		return
 	}
@@ -143,157 +130,112 @@ func logAndCopySubfolders(mode, destination, source string, f *os.File) {
 		return
 	}
 
-	sourceList, err := getSubfolders(source)
-	if err != nil {
-		writeLog("Failed to read source folder: "+err.Error(), f)
-		return
-	}
+	hashFile := filepath.Join(appDataFolder, "hash.json")
+	hashes := map[string]FolderHashEntry{}
+	data, _ := os.ReadFile(hashFile)
+	json.Unmarshal(data, &hashes)
 
-	turnNumber := 1
-
-	for _, folderName := range sourceList {
-		srcFolder := filepath.Join(source, folderName)
-		dstParent := filepath.Join(destination, folderName)
-		os.MkdirAll(dstParent, 0755)
-
-		saveNumber := 0
-		var dstFolder, dstZip string
-		for {
-			dstFolder = filepath.Join(dstParent, fmt.Sprintf("%s_Turn%d_save%d", folderName, turnNumber, saveNumber))
-			dstZip = dstFolder + ".zip"
-
-			if fileExists(dstZip) {
-				writeLog(fmt.Sprintf("Zip already exists: %s", dstZip), f)
-				break
-			}
-
-			if fileExists(dstFolder) {
-				// Folder exists but not zipped → zip it and skip creating a new save
-				writeLog(fmt.Sprintf("Partial folder exists, zipping: %s", dstFolder), f)
-				if err := zipFolder(dstFolder); err != nil {
-					writeLog(fmt.Sprintf("Failed to zip %s: %v", dstFolder, err), f)
-				} else {
-					writeLog(fmt.Sprintf("Zipped %s → %s.zip", dstFolder, dstFolder), f)
-				}
-				break
-			}
-
-			// Neither zip nor folder exists → create new save
-			os.MkdirAll(dstFolder, 0755)
-			if err := copyFolderContents(srcFolder, dstFolder); err != nil {
-				writeLog(fmt.Sprintf("Failed to copy %s → %s: %v", srcFolder, dstFolder, err), f)
-			} else {
-				writeLog(fmt.Sprintf("Copied %s → %s", srcFolder, dstFolder), f)
-				if err := zipFolder(dstFolder); err != nil {
-					writeLog(fmt.Sprintf("Failed to zip %s: %v", dstFolder, err), f)
-				} else {
-					writeLog(fmt.Sprintf("Zipped %s → %s.zip", dstFolder, dstFolder), f)
-				}
-			}
-			break
-		}
-	}
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func copyFolderContents(src, dst string) error {
-	os.MkdirAll(dst, 0755)
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-
+	entries, _ := os.ReadDir(source)
 	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
+		if !entry.IsDir() || entry.Name() == "newlords" {
+			continue
+		}
 
-		if entry.IsDir() {
-			os.MkdirAll(dstPath, 0755)
-			if err := copyFolderContents(srcPath, dstPath); err != nil {
-				return err
+		srcFolder := filepath.Join(source, entry.Name())
+		dstTopFolder := filepath.Join(destination, entry.Name())
+		os.MkdirAll(dstTopFolder, 0755)
+
+		entryHash, exists := hashes[entry.Name()]
+		if !exists {
+			entryHash = FolderHashEntry{}
+		}
+
+		// Copy top-level static files
+		staticFiles := []string{"ftherlnd"}
+		extensions := []string{".map", ".d6m", ".tga"}
+		for _, fileName := range staticFiles {
+			srcFile := filepath.Join(srcFolder, fileName)
+			if _, err := os.Stat(srcFile); err == nil {
+				dstFile := filepath.Join(dstTopFolder, fileName)
+				data, _ := os.ReadFile(srcFile)
+				os.WriteFile(dstFile, data, 0644)
 			}
-			if err := zipFolder(dstPath); err != nil {
-				return err
+		}
+		for _, ext := range extensions {
+			files, _ := filepath.Glob(filepath.Join(srcFolder, "*"+ext))
+			for _, file := range files {
+				dstFile := filepath.Join(dstTopFolder, filepath.Base(file))
+				data, _ := os.ReadFile(file)
+				os.WriteFile(dstFile, data, 0644)
 			}
+		}
+
+		// Compute .trn and .2h hashes
+		trnHash := hashFiles(filepath.Join(srcFolder, "*.trn"))
+		twoHHash := hashFiles(filepath.Join(srcFolder, "*.2h"))
+
+		turnNumber := entryHash.TurnNumber
+		saveCount := entryHash.SaveCount
+
+		if trnHash != entryHash.TrnHash {
+			turnNumber++
+			saveCount = 0
+			writeLog(fmt.Sprintf("[%s] .trn changed, new Turn %d", entry.Name(), turnNumber), f)
+		} else if twoHHash != entryHash.TwoHHash {
+			saveCount++
+			writeLog(fmt.Sprintf("[%s] .2h changed, new Save %d", entry.Name(), saveCount), f)
 		} else {
-			data, err := os.ReadFile(srcPath)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(dstPath, data, 0644); err != nil {
-				return err
-			}
+			// writeLog(fmt.Sprintf("[%s] No changes detected", entry.Name()), f) Debug line
+			continue
 		}
+
+		entryHash.TurnNumber = turnNumber
+		entryHash.SaveCount = saveCount
+		entryHash.TrnHash = trnHash
+		entryHash.TwoHHash = twoHHash
+		hashes[entry.Name()] = entryHash
+
+		newData, _ := json.MarshalIndent(hashes, "", "  ")
+		os.WriteFile(hashFile, newData, 0644)
+
+		// Create turn/save folder and copy only .trn/.2h files
+		dstFolder := filepath.Join(dstTopFolder, fmt.Sprintf("Turn%d_%d", turnNumber, saveCount))
+		os.MkdirAll(dstFolder, 0755)
+		fileEntries, _ := os.ReadDir(srcFolder)
+		for _, fEntry := range fileEntries {
+			if fEntry.IsDir() || (!strings.HasSuffix(fEntry.Name(), ".trn") && !strings.HasSuffix(fEntry.Name(), ".2h")) {
+				continue
+			}
+			srcPath := filepath.Join(srcFolder, fEntry.Name())
+			dstPath := filepath.Join(dstFolder, fEntry.Name())
+			data, _ := os.ReadFile(srcPath)
+			os.WriteFile(dstPath, data, 0644)
+		}
+		writeLog(fmt.Sprintf("Copied turn/save files to %s", dstFolder), f)
 	}
-	return nil
 }
 
-func zipFolder(parentFolder string) error {
-	dstZip := parentFolder + ".zip"
-
-	if err := zipFolderContentsOnly(parentFolder, dstZip); err != nil {
-		return err
+func hashFiles(pattern string) uint64 {
+	h := fnv.New64a()
+	files, _ := filepath.Glob(pattern)
+	for _, f := range files {
+		data, _ := os.ReadFile(f)
+		h.Write(data)
 	}
-
-	return os.RemoveAll(parentFolder)
+	return h.Sum64()
 }
 
-func zipFolderContentsOnly(srcFolder, dstZip string) error {
-	zipFile, err := os.Create(dstZip)
-	if err != nil {
-		return err
-	}
-	defer zipFile.Close()
-
-	zipWriter := zip.NewWriter(zipFile)
-	defer zipWriter.Close()
-
-	return filepath.Walk(srcFolder, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if path == srcFolder {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(srcFolder, path)
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			_, err = zipWriter.Create(relPath + "/")
-			return err
-		}
-
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		w, err := zipWriter.Create(relPath)
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(w, f)
-		return err
-	})
+type FolderHashEntry struct {
+	TurnNumber int    `json:"TurnNumber"`
+	SaveCount  int    `json:"SaveCount"`
+	TrnHash    uint64 `json:"TrnHash"`
+	TwoHHash   uint64 `json:"TwoHHash"`
 }
 
 // -------------------- Daemon File --------------------
 
 func runDaemonLoop(logFilePath string, f *os.File) {
-	heartbeatTicker := time.NewTicker(10 * time.Second)
-	defer heartbeatTicker.Stop()
-
-	cleanupTicker := time.NewTicker(24 * time.Hour)
-	defer cleanupTicker.Stop()
-
+	appDataFolder := setupAppDataFolder()
 	mode, destination, source, err := readConfig()
 	if err != nil {
 		writeLog("Failed to read config: "+err.Error(), f)
@@ -301,21 +243,27 @@ func runDaemonLoop(logFilePath string, f *os.File) {
 		writeLog(fmt.Sprintf("Config loaded: Mode=%s, Destination=%s, Source=%s", mode, destination, source), f)
 	}
 
+	seconds := 0
 	for {
-		select {
-		case <-heartbeatTicker.C:
+		time.Sleep(time.Second)
+		seconds++
+
+		if seconds%60 == 0 {
 			heartbeat(f)
-			if err == nil {
-				logAndCopySubfolders(mode, destination, source, f)
-			}
-		case <-cleanupTicker.C:
-			cleanLogRolling(logFilePath, 30*24*time.Hour)
+		}
+
+		if err == nil {
+			backupGames(mode, appDataFolder, destination, source, f)
+		}
+
+		if seconds%(24*60*60) == 0 {
+			cleanLogRolling(logFilePath, 30*24*time.Hour) //TODO come back to this
 		}
 	}
 }
 
 func heartbeat(f *os.File) {
-	writeLog("Daemon heartbeat...", f)
+	writeLog("DomFrog Daemon heartbeat...", f)
 }
 
 func readConfig() (mode, destination, source string, err error) {
@@ -340,45 +288,6 @@ func readConfig() (mode, destination, source string, err error) {
 	}
 
 	return mode, destination, source, nil
-}
-
-func runDaemonForever() {
-	appData := setupAppDataFolder()
-	lockPath := filepath.Join(appData, lockFileName)
-
-	if tryLaunchDetached(appData) {
-		return
-	}
-
-	if checkExistingDaemon(lockPath) {
-		return
-	}
-	writeLock(lockPath)
-
-	logFilePath, f := openLogFile(appData)
-	defer f.Close()
-
-	writeLog("DomFrog daemon started.", f)
-
-	runDaemonLoop(logFilePath, f)
-}
-
-func tryLaunchDetached(appData string) bool {
-	if len(os.Args) == 1 {
-		if err := launchDetachedDaemon(appData); err != nil {
-			fmt.Println("Failed to launch detached daemon:", err)
-		}
-		return true
-	}
-	return false
-}
-
-func checkExistingDaemon(lockPath string) bool {
-	if pid, ok := readLock(lockPath); ok && isPidRunning(pid) {
-		fmt.Println("Daemon already running with PID", pid)
-		return true
-	}
-	return false
 }
 
 func openLogFile(appData string) (string, *os.File) {
@@ -420,15 +329,6 @@ func cleanLogRolling(path string, maxAge time.Duration) {
 	}
 
 	os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0644)
-}
-
-func launchDetachedDaemon(appData string) error {
-	exePath := filepath.Join(appData, "DomFrog.exe")
-	cmd := exec.Command(exePath, "--daemon")
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-	}
-	return cmd.Start()
 }
 
 // -------------------- Lock File --------------------
@@ -539,7 +439,7 @@ func step1BackupMode(reader *bufio.Reader) (string, error) {
 	fmt.Println("----------------------------------------")
 	fmt.Println("1) Save all changes (default)")
 	fmt.Println("2) Save most recent IP and incomplete")
-	fmt.Println("3) Disable daemon")
+	fmt.Println("3) Disable daemon IP and incomplete")
 
 	var choice string
 	for choice == "" {
@@ -554,8 +454,8 @@ func step1BackupMode(reader *bufio.Reader) (string, error) {
 			choice = "1"
 		// case "2":
 		// 	choice = "2"
-		case "3":
-			choice = "3"
+		// case "3":
+		// 	choice = "3"
 		default:
 			fmt.Println("Invalid choice, try again.")
 		}
@@ -600,19 +500,4 @@ func step3SavedGamesFolder(reader *bufio.Reader) (string, error) {
 		return defaultPath, nil
 	}
 	return input, nil
-}
-
-func createScheduledTask(appData string) {
-	exePath := filepath.Join(appData, "DomFrog.exe")
-	taskName := "DomFrogDaemon"
-
-	cmd := exec.Command("schtasks",
-		"/Create",
-		"/F", // force overwrite
-		"/RL", "HIGHEST",
-		"/SC", "ONLOGON",
-		"/TN", taskName,
-		"/TR", fmt.Sprintf("\"%s\" --daemon", exePath),
-	)
-	_ = cmd.Run()
 }

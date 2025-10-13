@@ -12,3 +12,21 @@ MIT License
 Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
 
 */
+destination/
+└── ermortesting1/
+    ├── ftherlnd
+    ├── __randommap_ermortesting1.map
+    ├── __randommap_ermortesting1.d6m
+    ├── some_image.tga
+    ├── Turn1_0/
+    │   ├── early_ermor.trn
+    │   └── early_ermor.2h
+    ├── Turn1_1/
+    │   └── early_ermor.2h
+    └── Turn2_0/
+        ├── early_ermor.trn
+        └── early_ermor.2h
+
+
+Build command
+go build -o DomFrog.exe . ; upx --best --lzma DomFrog.exe
