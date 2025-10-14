@@ -99,7 +99,7 @@ func runInstallMode() {
 }
 
 func runDaemonMode_lite() {
-	fmt.Println("DO NOT CLOSE THIS PROCESS. THE DAEMON IS RUNNING")
+	fmt.Print("DO NOT CLOSE THIS PROCESS. THE DAEMON IS IP. \n\n")
 
 	appData := setupAppDataFolder()
 	lockPath := filepath.Join(appData, lockFileName)

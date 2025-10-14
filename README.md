@@ -12,6 +12,7 @@ DomFrog Backup Wizard makes **live backups** of all your saves and new turns for
 ## Current Status
 
 - **Installer:** In progress
+- **Support for multiple nations per game:** In progress
 - **Background process (daemon):** In progress
 - **Save overwrites & recovery:** Planned
 - **More robust tooling & GUI:** Planned
