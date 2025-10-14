@@ -28,3 +28,36 @@ My discord handle is @Monkeydew. I'll get around to messages and will likely hav
 ## Warning ⚠️
 
 This software was built and tested by an idiot.
+
+# Instructions
+
+Launch the app before doing/downlaoding your turns and select 2. This will run in console while you play saving everything. Close when you close dom.
+
+This app automatically copies your Dominions save folders and organizes them into clearly labeled backups.
+
+When running, it takes each game folder from your **source folder** (e.g. `AppData\Roaming\Dominions6\savedgames`) and mirrors it into your chosen **destination folder**. Defaults:  
+C:\Users\ <user> \OneDrive\Desktop\DomFrogBackup  
+C:\Users\ <user> \Desktop\DomFrogBackup
+
+Each game gets its own top-level folder in the destination, containing:
+
+- Map and terrain files (`.map`, `.d6m`, `.tga`) stored at the top level.
+- Subfolders for each turn, named like `Turn1_save0`, `Turn2_save0`, etc., which hold your `.trn` and `.2h` files.
+
+### Folder Structure
+
+- game_name
+  - GameName.map
+  - GameName.tga
+  - Turn1_save0
+    - nation.trn
+    - nation.2h
+- Turn1_save1
+  - nation.trn
+  - nation.2h
+- Turn2_save0
+  - nation.trn
+  - nation.2h
+
+The core files sit in your **AppData** directory and do not need to be modified.  
+To uninstall, simply delete the `DomFrog` folder inside AppData.
