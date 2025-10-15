@@ -5,9 +5,7 @@ Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
 
 ## Overview
 
-DomFrog Backup Wizard makes **live backups** of all your saves and new turns for your games. It’s designed to be working most of the time, kinda robust, and at minimum the backups should be reliable — using **default paths is recommended** for best results.
-
----
+DomFrog Backup Wizard makes **live backups** of all your saves and new turns for your games. It's designed to be working most of the time, kinda robust, and at minimum the backups should be reliable — using **default paths is recommended** for best results.
 
 ## Current Status
 
@@ -19,8 +17,6 @@ DomFrog Backup Wizard makes **live backups** of all your saves and new turns for
 - **Cross-platform support:** Planned
 
 Built-in Windows and Mac antivirus hate bootleg solutions so it'll take some time to implement the above.
-
----
 
 ## Support
 
@@ -50,15 +46,16 @@ Each game gets its own top-level folder in the destination, containing:
 - game_name
   - GameName.map
   - GameName.tga
+  - ftherlnd
   - Turn1_save0
     - nation.trn
     - nation.2h
-- Turn1_save1
-  - nation.trn
-  - nation.2h
-- Turn2_save0
-  - nation.trn
-  - nation.2h
+  - Turn1_save1
+    - nation.trn
+    - nation.2h
+  - Turn2_save0
+    - nation.trn
+    - nation.2h
 
 The core files sit in your **AppData** directory and do not need to be modified.  
 To uninstall, simply delete the `DomFrog` folder inside AppData.

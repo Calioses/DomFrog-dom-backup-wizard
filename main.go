@@ -65,7 +65,7 @@ Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
 		case "1":
 			runInstallMode()
 		case "2":
-			runDaemonMode_lite()
+			runDomFrog()
 		case "3":
 			fmt.Println("Exiting...")
 		default:
@@ -89,10 +89,10 @@ func runInstallMode() {
 	createEmptyHashFile(appData)
 
 	fmt.Println("Installed successfully! Daemon starting...")
-	runDaemonMode_lite()
+	runDomFrog()
 }
 
-func runDaemonMode_lite() {
+func runDomFrog() {
 	fmt.Print("DO NOT CLOSE THIS PROCESS. THIS WINDOW MUST STAY OPEN TO USE. \n\n")
 
 	appData := setupAppDataFolder()
@@ -112,9 +112,10 @@ func runDaemonMode_lite() {
 
 		heartbeat(i + 1)
 
-		if err == nil && i+1%5 == 0 {
+		if err == nil && (i+1)%5 == 0 {
 			backupGames(mode, appData, destination, source, f)
 		}
+
 		if i%3600 == 0 {
 			trimlog(logFilePath)
 		}
@@ -264,10 +265,23 @@ func backupGames(mode, appDataFolder, destination, source string, f *os.File) {
 
 	hashFile := filepath.Join(appDataFolder, "hash.json")
 	hashes := map[string]FolderHashEntry{}
-	data, _ := os.ReadFile(hashFile)
-	json.Unmarshal(data, &hashes)
 
-	entries, _ := os.ReadDir(source)
+	data, err := os.ReadFile(hashFile)
+	if err == nil {
+		if err := json.Unmarshal(data, &hashes); err != nil {
+			writeLog(fmt.Sprintf("Failed to parse hash file, starting fresh: %v", err), f)
+			hashes = make(map[string]FolderHashEntry)
+		}
+	} else {
+		hashes = make(map[string]FolderHashEntry)
+	}
+
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		writeLog(fmt.Sprintf("Failed to read source folder: %v", err), f)
+		return
+	}
+
 	changed := false
 
 	for _, entry := range entries {
@@ -277,7 +291,10 @@ func backupGames(mode, appDataFolder, destination, source string, f *os.File) {
 
 		srcFolder := filepath.Join(source, entry.Name())
 		dstTopFolder := filepath.Join(destination, entry.Name())
-		os.MkdirAll(dstTopFolder, 0755)
+		if err := os.MkdirAll(dstTopFolder, 0755); err != nil {
+			writeLog(fmt.Sprintf("Failed to create destination folder %s: %v", dstTopFolder, err), f)
+			continue
+		}
 
 		entryHash, exists := hashes[entry.Name()]
 		if !exists {
@@ -286,21 +303,35 @@ func backupGames(mode, appDataFolder, destination, source string, f *os.File) {
 
 		staticFiles := []string{"ftherlnd"}
 		extensions := []string{".map", ".d6m", ".tga"}
+
 		for _, fileName := range staticFiles {
 			srcFile := filepath.Join(srcFolder, fileName)
 			if _, err := os.Stat(srcFile); err == nil {
-				copyFile(srcFile, filepath.Join(dstTopFolder, fileName))
-			}
-		}
-		for _, ext := range extensions {
-			files, _ := filepath.Glob(filepath.Join(srcFolder, "*"+ext))
-			for _, file := range files {
-				copyFile(file, filepath.Join(dstTopFolder, filepath.Base(file)))
+				dstFile := filepath.Join(dstTopFolder, fileName)
+				if err := copyFile(srcFile, dstFile); err != nil {
+					writeLog(fmt.Sprintf("Failed to copy %s: %v", srcFile, err), f)
+				}
 			}
 		}
 
-		trnHash := hashFiles(filepath.Join(srcFolder, "*.trn"))
-		twoHHash := hashFiles(filepath.Join(srcFolder, "*.2h"))
+		for _, ext := range extensions {
+			files, _ := filepath.Glob(filepath.Join(srcFolder, "*"+ext))
+			for _, file := range files {
+				dstFile := filepath.Join(dstTopFolder, filepath.Base(file))
+				if err := copyFile(file, dstFile); err != nil {
+					writeLog(fmt.Sprintf("Failed to copy %s: %v", file, err), f)
+				}
+			}
+		}
+
+		trnHash, err := hashFiles(filepath.Join(srcFolder, "*.trn"))
+		if err != nil {
+			writeLog(fmt.Sprintf("Failed to hash .trn files: %v", err), f)
+		}
+		twoHHash, err := hashFiles(filepath.Join(srcFolder, "*.2h"))
+		if err != nil {
+			writeLog(fmt.Sprintf("Failed to hash .2h files: %v", err), f)
+		}
 
 		turnNumber := entryHash.TurnNumber
 		saveCount := entryHash.SaveCount
@@ -324,8 +355,17 @@ func backupGames(mode, appDataFolder, destination, source string, f *os.File) {
 		changed = true
 
 		dstFolder := filepath.Join(dstTopFolder, fmt.Sprintf("Turn%d_%d", turnNumber, saveCount))
-		os.MkdirAll(dstFolder, 0755)
-		fileEntries, _ := os.ReadDir(srcFolder)
+		if err := os.MkdirAll(dstFolder, 0755); err != nil {
+			writeLog(fmt.Sprintf("Failed to create turn folder %s: %v", dstFolder, err), f)
+			continue
+		}
+
+		fileEntries, err := os.ReadDir(srcFolder)
+		if err != nil {
+			writeLog(fmt.Sprintf("Failed to read src folder %s: %v", srcFolder, err), f)
+			continue
+		}
+
 		for _, fEntry := range fileEntries {
 			if fEntry.IsDir() {
 				continue
@@ -334,14 +374,23 @@ func backupGames(mode, appDataFolder, destination, source string, f *os.File) {
 			if !strings.HasSuffix(name, ".trn") && !strings.HasSuffix(name, ".2h") {
 				continue
 			}
-			copyFile(filepath.Join(srcFolder, name), filepath.Join(dstFolder, name))
+			srcPath := filepath.Join(srcFolder, name)
+			dstPath := filepath.Join(dstFolder, name)
+			if err := copyFile(srcPath, dstPath); err != nil {
+				writeLog(fmt.Sprintf("Failed to copy %s: %v", srcPath, err), f)
+			}
 		}
+
 		writeLog(fmt.Sprintf("Copied turn/save files to %s", dstFolder), f)
 	}
 
 	if changed {
-		newData, _ := json.MarshalIndent(hashes, "", "  ")
-		os.WriteFile(hashFile, newData, 0644)
+		newData, err := json.MarshalIndent(hashes, "", "  ")
+		if err != nil {
+			writeLog(fmt.Sprintf("Failed to marshal hash file: %v", err), f)
+		} else if err := os.WriteFile(hashFile, newData, 0644); err != nil {
+			writeLog(fmt.Sprintf("Failed to write hash file: %v", err), f)
+		}
 	}
 }
 
@@ -353,17 +402,20 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0644)
 }
 
-func hashFiles(pattern string) uint64 {
+func hashFiles(pattern string) (uint64, error) {
 	h := fnv.New64a()
-	files, _ := filepath.Glob(pattern)
-	for _, f := range files {
-		info, err := os.Stat(f)
-		if err != nil {
-			continue
-		}
-		h.Write([]byte(fmt.Sprintf("%d-%d", info.Size(), info.ModTime().UnixNano())))
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return 0, err
 	}
-	return h.Sum64()
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return 0, err
+		}
+		h.Write(data)
+	}
+	return h.Sum64(), nil
 }
 
 func readConfig(appData string) (mode, destination, source string, err error) {
@@ -415,16 +467,17 @@ func trimlog(path string) {
 
 // -------------------- Helpers --------------------
 
-var spinner = []string{"|", "/", "-", "\\"}
+var eyeFrames = []string{
+	"( o    ) ( o    )",
+	"(  o   ) (  o   )",
+	"(   o  ) (   o  )",
+	"(    o ) (    o )",
+	"(   o  ) (   o  )",
+	"(  o   ) (  o   )",
+}
 
 func heartbeat(i int) {
-	// if i%59 == 0 {
-	// 	fmt.Println(" Nerf Yomi ")
-	// 	return
-	// }
-
-	spin := spinner[i%len(spinner)]
-	fmt.Printf("\r%s", spin)
+	fmt.Printf("\r%s", eyeFrames[i%len(eyeFrames)])
 }
 
 func writeLog(msg string, f *os.File) {
