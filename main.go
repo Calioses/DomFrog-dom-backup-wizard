@@ -418,10 +418,10 @@ func trimlog(path string) {
 var spinner = []string{"|", "/", "-", "\\"}
 
 func heartbeat(i int) {
-	if i%59 == 0 {
-		fmt.Println(" Nerf Yomi")
-		return
-	}
+	// if i%59 == 0 {
+	// 	fmt.Println(" Nerf Yomi ")
+	// 	return
+	// }
 
 	spin := spinner[i%len(spinner)]
 	fmt.Printf("\r%s", spin)

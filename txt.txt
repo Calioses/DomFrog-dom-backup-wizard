@@ -29,4 +29,4 @@ destination/
 
 
 Build command in powershell
-go build -o DomFrog.exe . ; upx --best --lzma DomFrog.exe
+go build -trimpath -ldflags="-s -w" -o DomFrog.exe . ; upx --best --lzma DomFrog.exe 
