@@ -205,8 +205,8 @@ func step1BackupMode(reader *bufio.Reader, appData string) (string, error) {
 	fmt.Println("Step 1: Choose backup mode")
 	fmt.Println("----------------------------------------")
 	fmt.Println("1) Save all changes (default)")
-	fmt.Println("2) Save most recent IP and incomplete")
-	fmt.Println("3) Disable daemon IP and incomplete")
+	fmt.Println("2) Save most recent IP (incomplete)")
+	fmt.Println("3) Disable daemon IP (incomplete)")
 
 	var choice string
 	for choice == "" {
