@@ -28,6 +28,14 @@ My discord handle is @Monkeydew. I'll get around to messages and will likely hav
 
 This software was built and tested by an idiot.
 
+## Compile
+
+To compile
+First make sure you have [golang installed](https://go.dev/) then  
+you can use " go build -o DomFrog.exe . "
+or if you are a golang nerd  
+go build -trimpath -ldflags="-s -w" -o DomFrog.exe . ; upx --best --lzma DomFrog.exe
+
 # Instructions
 
 Launch the app before doing/downlaoding your turns and select 2. This will run in console while you play saving everything. Close when you close dom.
