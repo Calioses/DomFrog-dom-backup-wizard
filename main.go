@@ -395,11 +395,20 @@ func backupGames(mode, appDataFolder, destination, source string, f *os.File) {
 }
 
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	s, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	defer s.Close()
+
+	d, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	_, err = io.Copy(d, s)
+	return err
 }
 
 func hashFiles(pattern string) (uint64, error) {
@@ -408,13 +417,31 @@ func hashFiles(pattern string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	buf := make([]byte, 32*1024) // 32 KB buffer
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		file, err := os.Open(f)
 		if err != nil {
 			return 0, err
 		}
-		h.Write(data)
+
+		for {
+			n, err := file.Read(buf)
+			if n > 0 {
+				h.Write(buf[:n])
+			}
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				file.Close()
+				return 0, err
+			}
+		}
+
+		file.Close()
 	}
+
 	return h.Sum64(), nil
 }
 
