@@ -1,6 +1,6 @@
 # DomFrog Backup Wizard
 
-![Alt text](DomFrog preview.png)
+![Alt text](domfrogpreview.png)
 
 **MIT License**  
 Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
