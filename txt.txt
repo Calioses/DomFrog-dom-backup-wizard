@@ -28,5 +28,5 @@ destination/
         └── early_ermor.2h
 
 
-Build command
+Build command in powershell
 go build -o DomFrog.exe . ; upx --best --lzma DomFrog.exe
