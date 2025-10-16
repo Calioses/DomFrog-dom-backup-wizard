@@ -69,3 +69,16 @@ Each game gets its own top-level folder in the destination, containing:
 
 The core files sit in your **AppData** directory and do not need to be modified.  
 To uninstall, simply delete the `DomFrog` folder inside AppData.
+
+# FAQ
+
+#### Can I rename folders?
+
+You can change the interior folder names. The turn and save counter are not saved in reference to the backupfolders. The game folder has to remain the same as the original. But turn1_0 can be changed to whatever you want.
+
+#### What how does the app know if there is a new turn?
+
+The app only saves changes that are downloaded or locally made. If your turn is overwritten on the server and you do not download the change it will not be saved.
+If you do download the change it will immediately be saved. And a revert will be newly saved again.
+
+This is to keep time continuity.
