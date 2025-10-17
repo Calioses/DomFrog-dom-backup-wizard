@@ -38,6 +38,8 @@ go build -trimpath -ldflags="-s -w" -o DomFrog.exe . ; upx --best --lzma DomFrog
 
 # Instructions
 
+Run install step. This is will create the necessary files in appdata to run the app. After which it will start the app. Only needed once.
+
 Launch the app before doing/downlaoding your turns and select 2. This will run in console while you play saving everything. Close when you close dom.
 
 This app automatically copies your Dominions save folders and organizes them into clearly labeled backups.
