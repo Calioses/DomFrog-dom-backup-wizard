@@ -1,24 +1,5 @@
 package main
 
-import (
-	"bufio"
-	"encoding/json"
-	"fmt"
-	"hash/fnv"
-	"io"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
-)
-
-type FolderHashEntry struct {
-	TurnNumber int    `json:"TurnNumber"`
-	SaveCount  int    `json:"SaveCount"`
-	TrnHash    uint64 `json:"TrnHash"`
-	TwoHHash   uint64 `json:"TwoHHash"`
-}
-
 /*
      ______                 ______
      |  _  \                |  ___|
@@ -33,7 +14,65 @@ MIT License
 Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
 */
 
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"golang.org/x/sys/windows/svc"
+)
+
+type FolderHashEntry struct {
+	TurnNumber int    `json:"TurnNumber"`
+	SaveCount  int    `json:"SaveCount"`
+	TrnHash    uint64 `json:"TrnHash"`
+	TwoHHash   uint64 `json:"TwoHHash"`
+}
+
+type domFrogService struct{}
+
+func (s *domFrogService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
+	const cmdsAccepted = svc.AcceptStop | svc.AcceptShutdown
+	changes <- svc.Status{State: svc.StartPending}
+	changes <- svc.Status{State: svc.Running, Accepts: cmdsAccepted}
+
+	go RunDomFrogWatcher() // run your watchdog logic in a goroutine
+
+	for c := range r {
+		switch c.Cmd {
+		case svc.Stop, svc.Shutdown:
+			return false, 0
+		}
+	}
+
+	changes <- svc.Status{State: svc.StopPending}
+	return false, 0
+}
+
 func main() {
+	isService, err := svc.IsWindowsService()
+	if err != nil {
+		fmt.Println("Failed to determine service mode:", err)
+		os.Exit(1)
+	}
+
+	if isService {
+		svc.Run("DomFrogWatchdog", &domFrogService{})
+		return
+	}
+
+	// Regular switchboard for manual install/uninstall/run
+	DomFrogSwitchboard()
+}
+
+func DomFrogSwitchboard() {
 	banner := `
      ______                 ______
      |  _  \                |  ___|
@@ -49,6 +88,13 @@ Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
 `
 	fmt.Println(banner)
 
+	appData := setupAppDataFolder()
+
+	if len(os.Args) > 1 && os.Args[1] == "daemon" {
+		runDomFrog(appData)
+		return
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
@@ -56,6 +102,7 @@ Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
 		fmt.Println("1) Install and run")
 		fmt.Println("2) Run daemon mode")
 		fmt.Println("3) Exit")
+		fmt.Println("4) Uninstall")
 		fmt.Print("Enter choice: ")
 
 		input, _ := reader.ReadString('\n')
@@ -63,21 +110,22 @@ Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
 
 		switch input {
 		case "1":
-			runInstallMode()
+			runInstallMode(reader, appData)
 		case "2":
-			runDomFrog()
+			runDomFrog(appData)
 		case "3":
 			fmt.Println("Exiting...")
+			os.Exit(0)
+		case "4":
+			uninstall(reader, appData)
 		default:
 			fmt.Println("Invalid choice, try again.")
 		}
 	}
 }
 
-func runInstallMode() {
+func runInstallMode(reader *bufio.Reader, appData string) {
 	fmt.Println("Running install mode...")
-	appData := setupAppDataFolder()
-	reader := bufio.NewReader(os.Stdin)
 	choice, backupDest, sourcePath, err := getUserInput(reader, appData)
 	if err != nil {
 		fmt.Println("Error:", err)
@@ -88,14 +136,75 @@ func runInstallMode() {
 	copyExeToAppData(appData)
 	createEmptyHashFile(appData)
 
+	if !isAdmin() {
+		fmt.Print("Enable automated start (requires admin privileges)? (y/n): ")
+		resp, _ := reader.ReadString('\n')
+		if strings.ToLower(strings.TrimSpace(resp)) == "y" {
+			relaunchAsAdmin()
+			return
+		}
+		fmt.Println("Skipping service installation.")
+		runDomFrog(appData)
+		return
+	}
+
+	fmt.Println("Installing Windows service...")
+
+	exePath, err := os.Executable()
+	if err != nil {
+		fmt.Println("Error getting executable path:", err)
+		return
+	}
+
+	// Remove spaces after = to fix sc command
+	exec.Command("sc", "create", "DomFrogWatchdog", "binPath="+exePath, "start=auto").Run()
+	exec.Command("sc", "start", "DomFrogWatchdog").Run()
+
 	fmt.Println("Installed successfully! Daemon starting...")
-	runDomFrog()
 }
 
-func runDomFrog() {
+func uninstall(reader *bufio.Reader, appData string) {
+	fmt.Print("Do you want to uninstall DomFrog completely? (Y/N): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+
+	if input != "y" {
+		fmt.Println("Uninstall cancelled.")
+		return
+	}
+
+	if !isAdmin() {
+		fmt.Println("Admin privileges required to uninstall.")
+		relaunchAsAdmin() // this should restart the current executable with elevated rights
+		return
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		fmt.Println("Error locating executable.")
+		return
+	}
+	exeName := filepath.Base(exePath)
+
+	fmt.Println("Stopping and removing Windows service...")
+	exec.Command("sc", "stop", "DomFrogWatchdog").Run()
+	exec.Command("sc", "delete", "DomFrogWatchdog").Run()
+
+	fmt.Println("Launching cleanup process...")
+	cleanupCmd := fmt.Sprintf(
+		`start "" cmd /C "timeout /t 2 >nul && taskkill /im \"%s\" /f >nul 2>&1 && rmdir /s /q \"%s\""`,
+		exeName, appData,
+	)
+	exec.Command("cmd", "/C", cleanupCmd).Start()
+
+	fmt.Println("Uninstall initialized. This window will close...")
+	time.Sleep(2 * time.Second)
+	os.Exit(0)
+}
+
+func runDomFrog(appData string) {
 	fmt.Print("DO NOT CLOSE THIS PROCESS. THIS WINDOW MUST STAY OPEN TO USE. \n\n")
 
-	appData := setupAppDataFolder()
 	logFilePath, f := openLogFile(appData)
 	defer f.Close()
 	writeLog("DomFrog daemon started.", f)
@@ -492,6 +601,46 @@ func trimlog(path string) {
 	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
 
+// -------------------- Service --------------------
+
+func RunDomFrogWatcher() {
+	fmt.Println("Starting DomFrog watchdog...")
+
+	shouldClose := true
+
+	for {
+		time.Sleep(2 * time.Second)
+
+		out, err := exec.Command("tasklist").Output()
+		if err != nil {
+			fmt.Println("Failed to list processes:", err)
+			continue
+		}
+
+		processes := strings.ToLower(string(out))
+		d6Running := strings.Contains(processes, "dominions6.exe")
+		domFrogRunning := strings.Contains(processes, "domfrog.exe")
+
+		if d6Running && !domFrogRunning {
+			fmt.Println("Dominions6 detected, launching DomFrog daemon...")
+			exePath, err := os.Executable()
+			if err != nil {
+				fmt.Println("Error getting DomFrog path:", err)
+				continue
+			}
+			cmd := exec.Command(exePath, "daemon")
+			cmd.Start()
+			shouldClose = true
+		}
+
+		if !d6Running && domFrogRunning && shouldClose {
+			fmt.Println("Dominions6 not running, closing DomFrog...")
+			exec.Command("taskkill", "/im", "domfrog.exe", "/f").Run()
+			shouldClose = false
+		}
+	}
+}
+
 // -------------------- Helpers --------------------
 
 var eyeFrames = []string{
@@ -551,4 +700,17 @@ func getDefault(reader *bufio.Reader, prompt, configKey, fallback string, appDat
 		def = fallback
 	}
 	return ask(reader, prompt, def)
+}
+
+func isAdmin() bool {
+	cmd := exec.Command("net", "session")
+	err := cmd.Run()
+	return err == nil
+}
+
+func relaunchAsAdmin() {
+	exe, _ := os.Executable()
+	cmd := exec.Command("powershell", "-Command", "Start-Process", exe, "-Verb", "RunAs")
+	cmd.Start()
+	os.Exit(0)
 }

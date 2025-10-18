@@ -28,5 +28,58 @@ destination/
         └── early_ermor.2h
 
 
+
+
+
+[Program Start: main()]
+          |
+          |---> svc.IsWindowsService()? --- Yes ---> Run as Windows Service
+          |                                   |
+          |                                   v
+          |                           domFrogService.Execute()
+          |                                   |
+          |                                   |---> RunDomFrogWatcher() in goroutine
+          |                                   |
+          |                                   |---> Wait for Stop/Shutdown commands
+          |
+          No
+          |
+          v
+   [DomFrogSwitchboard()]  (interactive menu)
+          |
+          |---> User selects:
+          |       1) Install & run
+          |           |
+          |           |---> Copies exe to AppData
+          |           |---> Writes config
+          |           |---> Installs Windows service (requires admin)
+          |
+          |       2) Run daemon mode
+          |           |
+          |           |---> runDomFrog(appData)
+          |                   |
+          |                   |---> Visible console, backups, heartbeat
+          |
+          |       3) Exit
+          |
+          |       4) Uninstall
+                      |
+                      |---> Stops service, cleans up files
+
+--------------------------------------------------------------
+[RunDomFrogWatcher()]  (service or manual monitoring)
+          |
+          v
+   Loop every 2 seconds:
+      Check tasklist for:
+         - Dominions6.exe running?
+         - DomFrog.exe running?
+      If Dominions6 running && DomFrog NOT running:
+         --> Launch DomFrog.exe daemon
+             (visible console)
+      If Dominions6 NOT running && DomFrog running:
+         --> Kill DomFrog.exe
+
+
 Build command in powershell
 go build -trimpath -ldflags="-s -w" -o DomFrog.exe . ; upx --best --lzma DomFrog.exe 
