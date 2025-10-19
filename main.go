@@ -125,7 +125,7 @@ Use, modify, and distribute freely, with credit to Monkeydew — the G.O.A.T.
 }
 
 func runInstallMode(reader *bufio.Reader, appData string) {
-	fmt.Println("Running install mode...")
+	fmt.Println("Running install mode, requires admin privaleges")
 	choice, backupDest, sourcePath, err := getUserInput(reader, appData)
 	if err != nil {
 		fmt.Println("Error:", err)
@@ -137,15 +137,22 @@ func runInstallMode(reader *bufio.Reader, appData string) {
 	createEmptyHashFile(appData)
 
 	if !isAdmin() {
-		fmt.Print("Enable automated start (requires admin privileges)? (y/n): ")
-		resp, _ := reader.ReadString('\n')
-		if strings.ToLower(strings.TrimSpace(resp)) == "y" {
-			relaunchAsAdmin()
-			return
+		for {
+			fmt.Print("Enable automated start (requires admin privileges)? (y/n): ")
+			resp, _ := reader.ReadString('\n')
+			resp = strings.ToLower(strings.TrimSpace(resp))
+			switch resp {
+			case "y":
+				relaunchAsAdmin()
+				return
+			case "n":
+				fmt.Println("Skipping service installation.")
+				runDomFrog(appData)
+				return
+			default:
+				fmt.Println("Please enter 'y' or 'n'.")
+			}
 		}
-		fmt.Println("Skipping service installation.")
-		runDomFrog(appData)
-		return
 	}
 
 	fmt.Println("Installing Windows service...")
@@ -709,8 +716,25 @@ func isAdmin() bool {
 }
 
 func relaunchAsAdmin() {
-	exe, _ := os.Executable()
-	cmd := exec.Command("powershell", "-Command", "Start-Process", exe, "-Verb", "RunAs")
-	cmd.Start()
+	fmt.Print(1)
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Println("Failed to get executable path:", err)
+		return
+	}
+	fmt.Print(2)
+
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command",
+		fmt.Sprintf(`Start-Process -FilePath '%s' -Verb RunAs`, strings.ReplaceAll(exe, `'`, "''")),
+	)
+
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		fmt.Println("Failed to relaunch as admin:", err)
+		return
+	}
+	fmt.Print(3)
 	os.Exit(0)
 }
