@@ -26,7 +26,11 @@ My discord handle is @Monkeydew. I'll get around to messages and will likely hav
 
 ## Warning ⚠️
 
-This software was built and tested by an idiot.
+This software was built and tested by an idiot.  
+
+## Install
+
+Either download and run the exe. or zip of the exe. Otherwise compile as below instructs.
 
 ## Compile
 
