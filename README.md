@@ -26,7 +26,7 @@ My discord handle is @Monkeydew. I'll get around to messages and will likely hav
 
 ## Warning ⚠️
 
-This software was built and tested by an idiot.  
+This software was built and tested by an idiot.
 
 ## Install
 
@@ -88,3 +88,7 @@ The app only saves changes that are downloaded or locally made. If your turn is 
 If you do download the change it will immediately be saved. And a revert will be newly saved again.
 
 This is to keep time continuity.
+
+## 🐐 Credits 🐐
+
+Created by Monkeydew. Use, modify, and distribute freely. MIT Licensed.
