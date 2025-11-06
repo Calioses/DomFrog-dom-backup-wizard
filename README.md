@@ -87,7 +87,11 @@ You can change the interior folder names. The turn and save counter are not save
 The app only saves changes that are downloaded or locally made. If your turn is overwritten on the server and you do not download the change it will not be saved.
 If you do download the change it will immediately be saved. And a revert will be newly saved again.
 
-This is to keep time continuity.
+This is to keep time continuity.  
+
+#### Can I have the backups on toplevel C drive.
+
+You can but it requires launching the app with admin privelages. As the creator I recommend not putting it at the top-level as windows simply doesn't like this. 
 
 ## 🐐 Credits 🐐
 
