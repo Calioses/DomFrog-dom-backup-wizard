@@ -52,6 +52,8 @@ When running, it takes each game folder from your **source folder** (e.g. `AppDa
 C:\Users\ <user> \OneDrive\Desktop\DomFrogBackup  
 C:\Users\ <user> \Desktop\DomFrogBackup
 
+Avoid putting your destination folder in the top level of the C drive. More in FAQ.
+
 Each game gets its own top-level folder in the destination, containing:
 
 - Map and terrain files (`.map`, `.d6m`, `.tga`) stored at the top level.
